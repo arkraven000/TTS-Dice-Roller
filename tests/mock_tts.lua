@@ -103,10 +103,10 @@ local function new_object(kind, params)
             offset = V(),
         }
     end
-    -- TTS local X is mirrored relative to Unity (object yaw 180 = facing White).
+    -- positionToWorld/positionToLocal: plain Unity transform (scale, yaw, offset).
     function o.positionToWorld(l)
         l = V(l)
-        local u = { x = -l.x * o._scale.x, y = l.y * o._scale.y, z = l.z * o._scale.z }
+        local u = { x = l.x * o._scale.x, y = l.y * o._scale.y, z = l.z * o._scale.z }
         local w = rot_y(u, o._rot.y)
         return { x = w.x + o._pos.x, y = w.y + o._pos.y, z = w.z + o._pos.z }
     end
@@ -114,7 +114,7 @@ local function new_object(kind, params)
         w = V(w)
         local d = { x = w.x - o._pos.x, y = w.y - o._pos.y, z = w.z - o._pos.z }
         local u = rot_y(d, -o._rot.y)
-        return { x = -u.x / o._scale.x, y = u.y / o._scale.y, z = u.z / o._scale.z }
+        return { x = u.x / o._scale.x, y = u.y / o._scale.y, z = u.z / o._scale.z }
     end
     function o.setLock(b) o._locked = b; return true end
     function o.getLock() return o._locked end
@@ -252,6 +252,15 @@ Player = setmetatable({}, { __index = function(_, color) return { steam_name = "
 self = new_object("BlockSquare", { position = { 0, 1, 0 }, rotation = { 0, 180, 0 }, scale = { 25.5, 0.25, 16.15 } })
 
 -- Helpers for tests ----------------------------------------------------------
+
+-- Where a scripted button/input really appears. Confirmed in a live TTS test
+-- (2026-10-14): UI element positions use a local frame whose X axis is mirrored
+-- relative to positionToWorld - text read correctly but dice placed with
+-- positionToWorld(+x) landed on the opposite side from buttons at +x.
+function MOCK.button_world(pos)
+    local p = V(pos)
+    return self.positionToWorld({ -p.x, p.y, p.z })
+end
 function MOCK.button(key_or_label)
     for _, b in ipairs(self._buttons) do
         if b.label == key_or_label then return b end

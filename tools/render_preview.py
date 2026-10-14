@@ -59,7 +59,7 @@ def main():
     s = mat.getScale()
 
     def to_px(pos):
-        p = mat.positionToWorld(pos)
+        p = g.MOCK.button_world(pos)
         return (p["x"] + w_world / 2) * PX, (d_world / 2 - p["z"]) * PX
 
     def font(size_world):

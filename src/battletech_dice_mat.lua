@@ -28,7 +28,7 @@
 --------------------------------------------------------------------------------
 -- Constants
 --------------------------------------------------------------------------------
-local VERSION = "2.1.0"
+local VERSION = "2.1.1"
 
 -- Layout is designed on a DESIGN_W x DESIGN_D grid, scaled to the mat's size.
 local DESIGN_W, DESIGN_D = 30, 19
@@ -299,15 +299,20 @@ local function _local(vx, vz, lift)
     return { mx * vx * M.k / M.sx, M.top + (lift or 0.03) / M.sy, -vz * M.k / M.sz }
 end
 
+-- Scripted buttons/inputs use a local frame whose X axis is mirrored relative
+-- to positionToWorld/positionToLocal (seen in a live TTS test: labels on the
+-- left, dice on the right). Dice positions therefore flip X so they land in
+-- the same place as the UI drawn for them.
 local function _world(vx, vz, lift)
-    return self.positionToWorld(_local(vx, vz, lift))
+    local l = _local(vx, vz, lift)
+    return self.positionToWorld({ -l[1], l[2], l[3] })
 end
 
 -- World position -> design coords (vx, vz, height above the mat surface).
 local function _design(pos)
     local l = self.positionToLocal(pos)
     local mx = state.mirror and -1 or 1
-    return mx * l.x * M.sx / M.k, -l.z * M.sz / M.k, (l.y - M.top) * M.sy
+    return -mx * l.x * M.sx / M.k, -l.z * M.sz / M.k, (l.y - M.top) * M.sy
 end
 
 local function _ui_scale()
