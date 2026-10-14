@@ -14,8 +14,8 @@ together or which weapon a pair was for. The group asked for something like the
 **Goal:** a single portable, importable TTS object (a "dice mat") that:
 
 1. rolls physical dice **in pairs (2D6)**, with **each pair in its own color**,
-2. after the roll, **gathers each pair back into its own numbered, color-coded
-   slot**, in order, so a pair can never get mixed up with another, and
+2. after the roll, **lays every color out in its own row, paired in 2s inside that color,**
+   in order, so a pair can never get mixed up with another color, and
 3. resolves the result against BattleTech's tables (to-hit, hit location,
    cluster hits, critical hits, and so on) so nobody has to look them up.
 
@@ -87,59 +87,52 @@ are split into chunks of 20 or less and marked "approx".
   punch and kick locations.
 * Results need to stay **in order** (slot 1, 2, 3 …), with each pair kept together.
 
-## 3. Design
+## 3. Design (v2: Hutber-style)
 
-### The object
-* One self-contained **object script** on a flat mat (a scaled `BlockSquare`,
-  so it doesn't depend on any external images). Saved as a TTS **Saved Object**
-  JSON, so players can drop it into any BattleTech table (including the big BT
-  mod with 50+ maps) through *Objects → Saved Objects*.
-* Everything is drawn with scripted buttons and inputs. The layout is computed
-  from the mat's measured size, so it still works if someone rescales the mat.
+### What we learned from the Hutber 40K dice table
+The reference UX is the dice table in Hutber's 40K competitive map base
+(Lua source: `github.com/hutber/hutber-tts`, `TTSLUA/customDiceTable.ttslua` and
+`kustom40kDiceRollerMk3.ttslua`):
 
-### Slots (up to 12 color-locked pairs)
-Each slot is one row: a color swatch with its number, a **Weapon** name box, a **TN** box,
-a **Cluster size** box, a color pad where the pair of dice lands, a result read-out, and
-a per-slot re-roll button.
-Colors, in order: Red, Blue, Green, Yellow, Orange, Purple, Cyan, Pink, White,
-Brown, Lime, Grey.
+* **Flow:** pick a die color, then click `+1d6 … +25d6` to spawn dice onto the mat,
+  then click `Roll all dice`. A roller box re-rolls them **instantly** (`math.random`,
+  with no physics wait) and lays them out in rows by value. Each row has its own Del/Roll buttons.
+  Clearing the mat needs a right-click.
+* **Its "In 2s" button** (`groupSizeOnNextRoll = 2`) pairs dice **in the order
+  they went into the roller box**, not by color. That's why the BattleTech
+  group's pairs "spawned disjointed from their respective colors".
 
-### Roll modes (top button row)
-| Button | Dice per slot | Which slots | Result |
-|---|---|---|---|
-| TO-HIT | 2 | all active | total vs TN gives HIT or MISS (TN 13+ = impossible) |
-| LOCATION | 2 ('Mech) or 1 (Punch/Kick) | slots that hit (if HITS ONLY is on) | location for the chosen FACING, with a TAC flag on a 2 |
-| CLUSTER | 2 | slots that hit and have a cluster size of 2 or more | hits from the table, with ±CL MOD (Artemis/AMS) |
-| CRIT CHECK | 2 | all active | 0 / 1 / 2 / 3 crits (12 = head/limb blown off) |
-| CRIT SLOT | 2 | all active | slot 1–12 (die A picks the half, die B the slot) |
-| 2D6 / PSR | 2 | all active | total (vs TN if one is set) gives PASS or FAIL |
-| CLEAR | – | – | removes the mat's dice and clears results |
+v1 of this mat (12 numbered slots, each with weapon/TN/cluster boxes) solved the color
+problem but was much heavier than the Hutber table. v2 keeps the Hutber feel and fixes
+the pairing.
 
-### Roll pipeline (the actual fix for "disjointed colors")
-1. Make sure each slot has its dice: spawn `Die_6`s (tinted with the slot color,
-   tagged, named "BT Pair 3 (Yellow) A"), or reuse the existing ones by GUID.
-2. Drop each pair from just above **its own slot** with a random spin, then `roll()`.
-3. Wait until every die is at rest (`resting`), with a timeout as a fallback.
-4. Read each die's `getValue()`. Then **lock each die and smooth-move it into its
-   slot**, turned so the face that was read sits square and face up.
-   Every pair ends up side by side, in order, on its color pad.
-5. Resolve the result on the matching table, update the slot labels, and print a
-   color-coded summary to chat (`[hex]#3 YELLOW[-] Medium Laser: 4 + 5 = 9 vs TN 8 -> HIT`).
+### The v2 mat
+* **Controls (top):** a DICE COLOR picker (10 colors) and `+1D6 +2D6 +4D6 +6D6 +10D6`.
+  Below them: one big **ROLL IN 2s BY COLOR** button, then ROLL SORTED, READ AS, a number box
+  (TN or cluster SIZE), DELETE MISSES, and CLEAR (right-click).
+* **Result area:** one row per color, in palette order. Dice are paired in 2s
+  **within** their color, so colors are never mixed. A color label sits at the start of
+  each row, and a result box under each pair. Clicking a result box re-rolls that pair.
+  Up to 7 rows × 9 pairs.
+* **Rolling:** every d6 lying on the mat (not held by a player) is collected,
+  including dice brought from other mods, which are grouped by tint. The values are rolled by the script and
+  each die is placed and turned to show its value, square to the mat. Positions stay
+  the same from roll to roll. Dice are rolled in reading order (color by color, pair
+  by pair).
+* **READ AS** (doesn't re-roll, just relabels): SUM, TO-HIT vs TN, LOC FRONT/LEFT/RIGHT/REAR
+  (with the TAC and HEAD flags), CLUSTER with a size, CRIT CHECK.
+* **Attack flow:** TO-HIT, then DELETE MISSES, then READ AS LOC, then ROLL again.
+  Hits keep their weapon colors all the way through.
 
 ### Multiplayer and persistence
-* All logic runs on the host (TTS object scripts do). Clicks from any seat are
-  sent to the host, so there's no desync.
-* `onSave`/`onLoad` keep the pair count, settings, per-slot names, TNs and cluster sizes,
-  the last results, and the dice GUIDs, so a reload keeps the mat in sync.
-* A busy flag blocks overlapping rolls. Deleting the mat removes its dice.
+* Object scripts run on the host, so every click goes through one authority.
+* Saved: dice color, READ AS, TN, size, mirror. On load, the labels re-attach to the dice
+  still on the mat.
 
 ### Robustness choices
-* Layout scale is measured from `getBoundsNormalized()` and the button sizes are
-  corrected for non-uniform object scale.
-* Dice are resized to a fixed physical size after they spawn (measured, not guessed).
-* **MIRROR** button: TTS's local X axis convention is a common source of
-  left/right flips. If the slots appear in the wrong order, one click flips the
-  layout. The setting is saved.
+* Layout scale is measured from `getBoundsNormalized()` and button sizes are
+  corrected for non-uniform scale. Dice are resized to a fixed physical size.
+* **MIRROR** flips the layout if TTS's local X axis convention makes it read backwards.
 
 ## 4. Deliverables
 | Path | What |
@@ -147,10 +140,11 @@ Brown, Lime, Grey.
 | `src/battletech_dice_mat.lua` | The object script (source of truth) |
 | `tools/build_saved_object.py` | Builds the importable Saved Object JSON from the Lua |
 | `dist/BattleTech Dice Mat.json` | Ready-to-import TTS Saved Object |
-| `tests/` | Mock TTS API plus Lua 5.2 tests (tables, layout, full roll pipeline, save/load) |
+| `tests/` | Mock TTS API plus Lua 5.2 tests (tables, layout, color pairing, BT flow, save/load) |
 | `README.md` | Install and usage guide |
 
 ## 5. Possible next steps
 * Vehicle, ProtoMech and quad 'Mech hit location tables.
 * A to-hit TN calculator (gunnery, range, movement, TMM) for each slot.
 * Automatic location rolls for each cluster (5-damage groups for LRMs, one per missile for SRMs).
+* Punch/kick (1D6) location tables. v1 had them, but they don't fit the pairs layout.

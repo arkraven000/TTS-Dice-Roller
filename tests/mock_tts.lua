@@ -70,14 +70,30 @@ local function new_object(kind, params)
         _tint = nil,
         resting = true,
         held_by_color = nil,
+        type = (kind == "Die_6") and "Dice" or "Generic",
     }
     function o.getGUID() return o._guid end
     function o.getPosition() return V(o._pos) end
     function o.setPosition(p) o._pos = V(p); return true end
     function o.setPositionSmooth(p) o._pos = V(p); o._smooth = true; return true end
     function o.getRotation() return V(o._rot) end
-    function o.setRotation(r) o._rot = V(r); return true end
-    function o.setRotationSmooth(r) o._rot = V(r); return true end
+    -- A die shows the value whose rotation value matches its x/z rotation.
+    local function sync_value()
+        if kind ~= "Die_6" then return end
+        for _, rv in ipairs(o.getRotationValues()) do
+            local dx = (o._rot.x - rv.rotation.x) % 360
+            local dz = (o._rot.z - rv.rotation.z) % 360
+            if math.min(dx, 360 - dx) < 1e-6 and math.min(dz, 360 - dz) < 1e-6 then
+                o._value = rv.value
+                return
+            end
+        end
+    end
+    function o.setRotation(r) o._rot = V(r); sync_value(); return true end
+    function o.setRotationSmooth(r) o._rot = V(r); sync_value(); return true end
+    function o.setVelocity(v) o._vel = V(v); return true end
+    function o.setAngularVelocity(v) o._avel = V(v); return true end
+    function o.getColorTint() local t = o._tint or { x = 1, y = 1, z = 1 }; return { r = t.x, g = t.y, b = t.z } end
     function o.getScale() return V(o._scale) end
     function o.setScale(s) o._scale = V(s); return true end
     function o.getBoundsNormalized()
@@ -172,6 +188,21 @@ MOCK.new_object = new_object
 
 function getObjectFromGUID(g) return MOCK.objects[g] end
 
+function getAllObjects()
+    local out = {}
+    for _, o in pairs(MOCK.objects) do out[#out + 1] = o end
+    table.sort(out, function(a, b) return a._guid < b._guid end)
+    return out
+end
+
+-- Put a plain die (as if a player dropped one) somewhere in world space.
+function MOCK.drop_die(world_pos, tint, value)
+    local o = new_object("Die_6", { position = world_pos, rotation = { 0, 0, 0 }, base = { 0.9, 0.9, 0.9 } })
+    if tint then o.setColorTint(tint) end
+    o._value = value or 1
+    return o
+end
+
 function spawnObject(p)
     assert(p.type, "spawnObject needs a type")
     local o = new_object(p.type, { position = p.position, rotation = p.rotation, scale = p.scale,
@@ -237,4 +268,15 @@ function MOCK.chat_since(n)
     local out = {}
     for i = n + 1, #MOCK.chat do out[#out + 1] = MOCK.chat[i].msg end
     return out
+end
+
+-- Deterministic dice for tests: math.random(6) pops MOCK.forced_values first.
+local real_random = math.random
+math.random = function(...)
+    local n = select("#", ...)
+    local a = ...
+    if n == 1 and a == 6 and MOCK.forced_values and #MOCK.forced_values > 0 then
+        return table.remove(MOCK.forced_values, 1)
+    end
+    return real_random(...)
 end

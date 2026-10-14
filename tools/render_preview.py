@@ -21,20 +21,20 @@ FONT = "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"
 BUTTON_UNITS = 500
 
 EXAMPLE = r"""
-math.randomseed(7)
 onLoad("")
-MOCK.click("slot_select_6")
-local weapons = {
-  {"Medium Laser", "7", ""}, {"LRM 15", "9", "15"}, {"SRM 6", "8", "6"},
-  {"PPC", "10", ""}, {"Large Laser", "9", ""}, {"Medium Pulse", "6", ""},
-}
-for i, w in ipairs(weapons) do
-  _G["slot_name_" .. i](self, "White", w[1], false)
-  _G["slot_tn_" .. i](self, "White", w[2], false)
-  _G["slot_cluster_" .. i](self, "White", w[3], false)
+MOCK.run()
+local function spawn(color, n)
+  MOCK.click("pick_color_" .. color)
+  MOCK.click("spawn_" .. (n or 2))
+  MOCK.run()
 end
-MOCK.forced_values = { 4, 5,  6, 4,  2, 3,  6, 6,  1, 3,  5, 2 }
-MOCK.click("btn_tohit", "Red")
+-- a typical volley: 3 lasers (Red), an LRM (Blue), 2 SRMs (Green), a PPC (Yellow)
+spawn(1, 6); spawn(2, 2); spawn(3, 4); spawn(4, 2)
+MOCK.click("pick_color_1")
+MOCK.click("btn_read_as")                 -- TO-HIT
+input_number(self, "White", "8", false)
+MOCK.forced_values = { 4, 5,  2, 3,  6, 6,  5, 4,  3, 3,  6, 2,  1, 4 }
+MOCK.click("btn_roll_pairs", "Red")
 MOCK.run()
 """
 
@@ -82,11 +82,9 @@ def main():
 
     # In TTS an input keeps what the player typed; the mock only stores it in state.
     state = json.loads(g.onSave())
-    field = {"slot_name_": "name", "slot_tn_": "tn", "slot_cluster_": "cluster"}
     for inp in mat._inputs.values():
-        for prefix, key in field.items():
-            if inp.input_function.startswith(prefix):
-                inp.value = state["slots"][int(inp.input_function[len(prefix):]) - 1][key]
+        if inp.input_function == "input_number" and state["mode"] == 2:
+            inp.value = state["tn"]
         sc = inp.scale
         cx, cy = to_px(inp.position)
         hw = inp.width / BUTTON_UNITS * sc[1] * s["x"] * PX / 2
