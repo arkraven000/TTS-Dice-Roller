@@ -1,0 +1,6 @@
+== Tester-Red: IN 2s BY COLOR - TO-HIT (TN 8) ==
+[e62929]RED[-]: 9 HIT  |  5 miss  |  12 HIT
+[4080ff]BLUE[-]: 9 HIT
+[26b847]GREEN[-]: 6 miss  |  8 HIT
+[ffe01a]YELLOW[-]: 5 miss
+Hits: 4 / 7
