@@ -26,8 +26,9 @@ TTS API.*
 
    (If you moved your TTS data folder in the game's settings, use that location instead.)
 3. In TTS: **Objects → Saved Objects → BattleTech Dice Mat**. Drag it to a free
-   spot beside the map. It drops onto whatever table or map is there. Then lock it in
-   place with **L** (or right-click → Toggles → Lock) so dice can't push it around.
+   spot beside the map. It drops onto whatever table or map is there and **locks itself**
+   once it has settled, so dice can't push it around. To move it later, unlock it with **L**
+   (or right-click → Toggles → Lock).
 
 The mat is a scaled block, and its script draws everything on it, so it
 doesn't need any external images. It works in any table, including the BattleTech
@@ -108,7 +109,7 @@ after the palette colors. Dice in a player's hand and dice off the mat are ignor
   saved. **Text is upside down:** rotate the mat 180°.
 * **Buttons look too big or too small:** change `BUTTON_UNITS` at the top of the
   script.
-* **More dice than fit:** the mat holds 7 rows × 9 pairs (96 dice max).
+* **Lots of colors:** up to 7 rows × 9 pairs show at full size. With more rows (8+ colors, say) the dice and labels shrink to fit the mat. The mat holds 96 dice at most.
 
 ## Development
 
@@ -121,7 +122,7 @@ python3 tools/build_saved_object.py   # regenerates dist/BattleTech Dice Mat.jso
 
 * `src/battletech_dice_mat.lua` is the source of truth. Run the build script after editing it;
   the tests fail if the `dist/` JSON is out of date.
-* The tests cover the rules tables, the layout (everything fits, nothing overlaps,
+* The tests (36, including regressions for every confirmed review finding) cover the rules tables, the layout (everything fits, nothing overlaps,
   even on a full mat), color pairing (colors never mixed, palette order, stable
   positions), foreign or held or off-mat dice, sorted mode, the TO-HIT → DELETE MISSES →
   LOCATION flow, cluster sizes, re-rolling one pair, clearing, save/load, mirroring,

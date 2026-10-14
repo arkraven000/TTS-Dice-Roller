@@ -188,7 +188,7 @@ MOCK.new_object = new_object
 
 function getObjectFromGUID(g) return MOCK.objects[g] end
 
-function getAllObjects()
+function getObjects()
     local out = {}
     for _, o in pairs(MOCK.objects) do out[#out + 1] = o end
     table.sort(out, function(a, b) return a._guid < b._guid end)
@@ -216,7 +216,15 @@ function spawnObject(p)
 end
 
 Wait = {}
-function Wait.time(fn, secs) schedule(MOCK.now + (secs or 0), fn); return 1 end
+function Wait.time(fn, secs, reps)
+    secs = secs or 0
+    local function run()
+        fn()
+        if reps == -1 then schedule(MOCK.now + secs, run) end
+    end
+    schedule(MOCK.now + secs, run)
+    return 1
+end
 function Wait.frames(fn, n) schedule(MOCK.now + (n or 1) / 60, fn); return 1 end
 function Wait.condition(fn, cond, timeout, timeout_fn)
     local deadline = MOCK.now + (timeout or math.huge)
@@ -238,7 +246,7 @@ function printToColor(msg, pc, color) table.insert(MOCK.chat, { to = pc, msg = m
 function broadcastToAll(msg, color) table.insert(MOCK.chat, { to = "all", msg = msg, broadcast = true }) end
 function print(...) end
 
-Player = setmetatable({}, { __index = function(_, color) return { steam_name = "Tester-" .. tostring(color), color = color } end })
+Player = setmetatable({}, { __index = function(_, color) return { steam_name = "Tester-" .. tostring(color), color = color, seated = true } end })
 
 -- The mat itself: a BlockSquare-like object, facing the White seat.
 self = new_object("BlockSquare", { position = { 0, 1, 0 }, rotation = { 0, 180, 0 }, scale = { 25.5, 0.25, 16.15 } })

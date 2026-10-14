@@ -98,8 +98,13 @@ TESTS.cluster_table_known_values = function()
     eq(cluster_hits(10, 9), 8); eq(cluster_hits(15, 4), 6); eq(cluster_hits(6, 2), 2)
     eq(cluster_hits(2, 7), 1); eq(cluster_hits(2, 8), 2); eq(cluster_hits(4, 3), 2)
     eq(cluster_hits(1, 7), 1)
+    -- MRM columns printed in Total Warfare are exact; other sizes > 20 are split
+    eq(cluster_hits(30, 2), 10); eq(cluster_hits(30, 4), 12); eq(cluster_hits(30, 9), 24)
+    eq(cluster_hits(40, 7), 24); eq(cluster_hits(40, 12), 40)
     local h, approx = cluster_hits(30, 12)
-    eq(h, 30); ok(approx)
+    eq(h, 30); ok(not approx, "column 30 is exact")
+    h, approx = cluster_hits(25, 12)
+    eq(h, 25); ok(approx, "size 25 is an approximation")
 end
 
 TESTS.mech_location_table = function()
@@ -489,4 +494,148 @@ TESTS.api = function()
     ok(api_roll({ color = "Blue" })); MOCK.run()
     local res = api_get_results()
     eq(#res, 1); eq(res[1].color, "Red"); eq(res[1].label, "5")
+end
+
+--------------------------------------------------------------------------------
+-- Regressions from the code review
+--------------------------------------------------------------------------------
+TESTS.review_ten_colors_all_fit_on_mat = function()
+    fresh()
+    for _, c in ipairs(PALETTE_NAMES) do spawn(c, 2) end
+    MOCK.click("btn_roll_pairs"); MOCK.run()
+    eq(#rows_of_dice(), 10, "one row per color, all 10 colors")
+    ok(MOCK.button("20 dice"), "every die still counted")
+    check_layout()
+    local chat = table.concat(MOCK.chat_since(0), "\n")
+    ok(chat:find("BROWN"), "last color still rolled")
+    -- a single colour with a long wrap also fits
+    MOCK.click("btn_clear", "White", true); MOCK.run()
+    spawn("Red", 10); spawn("Red", 10); spawn("Red", 10); spawn("Red", 10); spawn("Red", 10)
+    spawn("Red", 10); spawn("Red", 10); spawn("Red", 10); spawn("Red", 10); spawn("Blue", 6)
+    MOCK.click("btn_roll_pairs"); MOCK.run()
+    eq(#MOCK.dice(), 96)
+    check_layout()
+end
+
+TESTS.review_labels_follow_dice_changed_by_hand = function()
+    fresh()
+    spawn("Red")
+    MOCK.click("btn_read_as")
+    input_number(self, "White", "8", false)
+    MOCK.forced_values = { 1, 2 }
+    MOCK.click("btn_roll_pairs"); MOCK.run()
+    eq(group_label(1).label, "3 miss")
+    -- a player hovers the dice and types 6 on each
+    for _, d in ipairs(MOCK.dice()) do d.setRotation({ 90, 0, 0 }) end
+    MOCK.run(3)
+    eq(group_label(1).label, "12 HIT", "label updated from the dice as they lie")
+    eq(api_get_results()[1].values[1], 6)
+    MOCK.click("btn_del_misses"); MOCK.run()
+    eq(#MOCK.dice(), 2, "a pair that now hits is not deleted")
+end
+
+TESTS.review_delete_misses_spares_held_and_moved_dice = function()
+    fresh()
+    spawn("Red"); spawn("Blue")
+    MOCK.click("btn_read_as")
+    input_number(self, "White", "8", false)
+    MOCK.forced_values = { 1, 1, 1, 1 }
+    MOCK.click("btn_roll_pairs"); MOCK.run()
+    local rows = rows_of_dice()
+    rows[1][1].held_by_color = "Red"                     -- picked up
+    rows[2][1].setPosition({ x = 100, y = 1, z = 100 })  -- moved off the mat
+    -- clicking the result of a pair that left the mat is refused, not re-rolled
+    local n0 = #MOCK.chat
+    local before = rows[2][1]._rot.x
+    MOCK.click("group_click_2", "Blue")
+    ok(MOCK.chat[n0 + 1].msg:find("no longer on the mat"), MOCK.chat[n0 + 1].msg)
+    eq(rows[2][1]._rot.x, before, "moved die not turned")
+    MOCK.click("btn_del_misses"); MOCK.run()
+    ok(not rows[1][1].isDestroyed(), "held die survives")
+    ok(not rows[2][1].isDestroyed(), "moved die survives")
+end
+
+TESTS.review_roll_while_spawning_excludes_new_dice = function()
+    fresh()
+    spawn("Red")
+    MOCK.click("pick_color_2")
+    MOCK.click("spawn_2")                 -- callbacks not run yet
+    MOCK.forced_values = { 3, 4 }
+    local n0 = #MOCK.chat
+    MOCK.click("btn_roll_pairs")          -- before the blue dice finish spawning
+    MOCK.run()
+    local chat = table.concat(MOCK.chat_since(n0), "\n")
+    ok(not chat:find("WHITE"), "spawning dice are not rolled as white: " .. chat)
+    eq(group_label(1).label, "7")
+    eq(group_label(2).label, "?", "the blue pair arrives unrolled")
+    for _, d in ipairs(rows_of_dice()[2]) do eq(tint_name(d), "Blue") end
+end
+
+TESTS.review_quick_spawns_do_not_overlap = function()
+    fresh()
+    MOCK.click("pick_color_1")
+    MOCK.click("spawn_2"); MOCK.click("spawn_2"); MOCK.click("spawn_10")
+    local seen = {}
+    for _, d in ipairs(MOCK.dice()) do
+        local key = string.format("%.2f,%.2f,%.2f", d._pos.x, d._pos.y, d._pos.z)
+        ok(not seen[key], "two dice spawned at " .. key)
+        seen[key] = true
+    end
+    MOCK.run()
+    eq(#MOCK.dice(), 14)
+end
+
+TESTS.review_similar_foreign_tints_share_a_row = function()
+    fresh()
+    MOCK.drop_die(self.positionToWorld({ -0.1, 0.6, 0 }), { 0.627, 0.1249, 0.941 }, 3)
+    MOCK.drop_die(self.positionToWorld({ 0.1, 0.6, 0 }), { 0.627, 0.1251, 0.941 }, 3)
+    MOCK.click("btn_roll_pairs"); MOCK.run()
+    eq(#rows_of_dice(), 1, "near-identical tints form one pair")
+    ok(group_label(1).label:match("^%d+$"), "paired: " .. group_label(1).label)
+end
+
+TESTS.review_sorted_layout_guards = function()
+    fresh()
+    spawn("Red", 4)
+    MOCK.click("btn_read_as")
+    input_number(self, "White", "8", false)
+    MOCK.click("btn_roll_sorted"); MOCK.run()
+    local n0 = #MOCK.chat
+    MOCK.click("btn_del_misses")
+    ok(MOCK.chat[n0 + 1].msg:find("works on pairs"), "refused after SORTED")
+    eq(#MOCK.dice(), 4)
+    onLoad(onSave()); MOCK.run()
+    eq(state().layout, "sorted", "layout survives a reload")
+    eq(group_label(1).width, 0, "still sorted, not re-paired")
+end
+
+TESTS.review_typing_does_not_relabel_every_keystroke = function()
+    fresh()
+    spawn("Red")
+    MOCK.forced_values = { 4, 4 }
+    MOCK.click("btn_roll_pairs"); MOCK.run()
+    MOCK.click("btn_read_as")
+    input_number(self, "White", "1", true)     -- still typing "10"
+    eq(group_label(1).label, "8", "no relabel while editing")
+    input_number(self, "White", "10", false)
+    eq(group_label(1).label, "8 miss")
+end
+
+TESTS.review_mat_locks_itself_after_first_spawn = function()
+    self._locked = false
+    onLoad("")
+    MOCK.run(5)
+    ok(self._locked, "locked once it settled")
+    ok(state().placed)
+    self._locked = false                       -- player unlocks to move it
+    onLoad(onSave()); MOCK.run(5)
+    ok(not self._locked, "only locks itself once")
+end
+
+TESTS.review_warnings_reach_empty_seats = function()
+    fresh()
+    Player = setmetatable({}, { __index = function() return { seated = false } end })
+    local n0 = #MOCK.chat
+    api_roll({})
+    eq(MOCK.chat[n0 + 1].to, "all", "API warning goes to everyone when White is empty")
 end

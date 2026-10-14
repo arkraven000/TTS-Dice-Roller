@@ -28,7 +28,7 @@
 --------------------------------------------------------------------------------
 -- Constants
 --------------------------------------------------------------------------------
-local VERSION = "2.0.0"
+local VERSION = "2.1.0"
 
 -- Layout is designed on a DESIGN_W x DESIGN_D grid, scaled to the mat's size.
 local DESIGN_W, DESIGN_D = 30, 19
@@ -39,15 +39,21 @@ local DIE_SIZE = 1.0          -- die edge, design units
 local DIE_GAP = 0.12          -- gap between the two dice of a pair
 local GROUP_GAP = 0.9         -- gap between pairs
 local SINGLE_GAP = 0.2        -- gap between dice in SORTED mode
-local ROW_FIRST_Z = 3.0       -- design z of the first result row (dice centre)
-local ROW_H = 1.85            -- row pitch
-local MAX_ROWS = 7
+local AREA_TOP = 3.55         -- top edge of the result area (design z)
+local AREA_BOTTOM = -9.35     -- bottom edge of the result area
+local ROW_H = 1.85            -- row pitch at full size
 local AREA_LEFT = -12.2       -- first die edge in a row
 local AREA_RIGHT = 14.7       -- last die edge in a row
 local ROW_LABEL_X = -13.55
 local GROUP_LABEL_DZ = -0.82  -- result label offset below the pair
-local MAX_GROUP_LABELS = 63   -- 9 pairs x 7 rows
+local GROUP_LABEL_H = 0.55
+-- Full size fits 7 rows x 9 pairs. With more rows (e.g. 8+ colors) everything
+-- shrinks step by step until it fits on the mat.
+local FIT_STEPS = { 1, 0.9, 0.8, 0.7, 0.6, 0.5, 0.45, 0.4 }
+local MAX_ROW_LABELS = 16
 local MAX_DICE = 96
+local MAX_GROUP_LABELS = 56   -- MAX_DICE / 2 pairs + odd dice
+local FOREIGN_MERGE_D2 = 0.004 -- squared RGB distance that counts as "same color"
 local DICE_TAG = "BTDiceMat"
 
 local PALETTE = {
@@ -112,20 +118,28 @@ local CLUSTER_ROWS = {
     [12] = { 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20 },
 }
 local CLUSTER_MAX = 20
+-- Columns above 20 printed in Total Warfare (MRM-30 / MRM-40).
+local CLUSTER_BIG = {
+    [30] = { 10, 10, 12, 18, 18, 18, 18, 24, 24, 30, 30 },
+    [40] = { 12, 12, 18, 24, 24, 24, 24, 32, 32, 40, 40 },
+}
 
 --------------------------------------------------------------------------------
 -- State
 --------------------------------------------------------------------------------
 local state                  -- persisted
 local M = {}                 -- layout metrics (runtime)
+local spawning = {}          -- guid -> true while a +D6 die is still spawning
+local visible_rows, visible_groups = 0, 0
+local watching = false
 local ui = { btn = {}, input = {} }
 local button_count, input_count = 0, 0
 local groups = {}            -- current layout: { {guids={...}, label_slot=n, color=rgb, name=...} }
 local unrolled = {}          -- guid -> true for dice spawned but not rolled yet
-local last_layout = "pairs"  -- "pairs" or "sorted"
 
 local function _default_state()
-    return { version = 2, color = 1, mode = 1, tn = "", size = "", mirror = false }
+    return { version = 2, color = 1, mode = 1, tn = "", size = "", mirror = false,
+        layout = "pairs", placed = false }
 end
 
 --------------------------------------------------------------------------------
@@ -168,20 +182,31 @@ local function _rgb_of(c)
     return { c.r or c[1] or 1, c.g or c[2] or 1, c.b or c[3] or 1 }
 end
 
--- Map a die tint to a color group. Palette colors keep palette order; any
--- other tint (dice brought from another mod) gets its own group after them.
-local function _color_group(rgb)
+local function _dist2(a, b)
+    return (a[1] - b[1]) ^ 2 + (a[2] - b[2]) ^ 2 + (a[3] - b[3]) ^ 2
+end
+
+-- Palette color group for a tint (nil if the tint is not a palette color).
+local function _palette_group(rgb)
     local best, best_d = nil, 0.03
     for i, p in ipairs(PALETTE) do
-        local d = (rgb[1] - p.rgb[1]) ^ 2 + (rgb[2] - p.rgb[2]) ^ 2 + (rgb[3] - p.rgb[3]) ^ 2
+        local d = _dist2(rgb, p.rgb)
         if d < best_d then best, best_d = i, d end
     end
     if best then
         return { key = "p" .. best, order = best, name = PALETTE[best].name, rgb = PALETTE[best].rgb }
     end
-    local q = { math.floor(rgb[1] * 20 + 0.5) / 20, math.floor(rgb[2] * 20 + 0.5) / 20, math.floor(rgb[3] * 20 + 0.5) / 20 }
-    local hex = _hex(q)
-    return { key = "x" .. hex, order = 100, name = "#" .. string.upper(hex), rgb = q }
+end
+
+-- Warn one player (or everyone, if that seat is empty, e.g. API calls).
+local function _warn(color, msg)
+    msg = "BattleTech Dice: " .. msg
+    local ok, seated = pcall(function() return Player[color] and Player[color].seated end)
+    if ok and seated then
+        printToColor(msg, color, { 1, 0.6, 0.2 })
+    else
+        printToAll(msg, { 1, 0.6, 0.2 })
+    end
 end
 
 --------------------------------------------------------------------------------
@@ -193,6 +218,7 @@ function cluster_hits(size, roll)
     if size <= 0 then return 0, false end
     if size == 1 then return 1, false end
     if size <= CLUSTER_MAX then return CLUSTER_ROWS[roll][size - 1], false end
+    if CLUSTER_BIG[size] then return CLUSTER_BIG[size][roll - 1], false end
     local total, left = 0, size          -- MRM-30/40: split into chunks of <= 20
     while left > 0 do
         local chunk = math.min(left, CLUSTER_MAX)
@@ -288,7 +314,6 @@ local function _ui_scale()
     return { M.k / M.sx, M.k / M.sy, M.k / M.sz }
 end
 
-local function _row_z(r) return ROW_FIRST_Z - (r - 1) * ROW_H end
 
 --------------------------------------------------------------------------------
 -- UI helpers
@@ -399,11 +424,12 @@ local function _build_ui()
         color = { 0.30, 0.30, 0.30 }, fn = "btn_clear", tooltip = "Right-click: delete every die on the mat" })
 
     -- Result rows (pre-created, shown/hidden by editing)
-    for r = 1, MAX_ROWS do
-        _add_button("row_" .. r, { vx = ROW_LABEL_X, vz = _row_z(r), label = "", font = 0.36, lift = 0.02 })
+    for r = 1, MAX_ROW_LABELS do
+        _add_button("row_" .. r, { vx = ROW_LABEL_X, vz = AREA_BOTTOM, label = "", font = 0.36, lift = 0.02 })
     end
+    visible_rows, visible_groups = 0, 0
     for g = 1, MAX_GROUP_LABELS do
-        _add_button("group_" .. g, { vx = 0, vz = 0, label = "", font = 0.34, lift = 0.02,
+        _add_button("group_" .. g, { vx = 0, vz = AREA_BOTTOM, label = "", font = 0.34, lift = 0.02,
             fn = "group_click_" .. g, tooltip = "Click: re-roll this pair" })
     end
 
@@ -415,17 +441,22 @@ end
 --------------------------------------------------------------------------------
 local function _is_d6(o)
     if o == nil or (o.isDestroyed and o.isDestroyed()) then return false end
-    local t = o.type or o.tag
-    if t ~= "Dice" then return false end
+    if o.type ~= "Dice" then return false end
     local ok, rvs = pcall(function() return o.getRotationValues() end)
     return ok and type(rvs) == "table" and #rvs == 6
 end
 
--- Every d6 lying on (or just above) the mat, not held by a player.
+local function _all_objects()
+    if getObjects then return getObjects() end
+    return getAllObjects()
+end
+
+-- Every d6 lying on (or just above) the mat: not held, not still spawning.
 local function _dice_on_mat()
     local out = {}
-    for _, o in ipairs(getAllObjects()) do
-        if o ~= self and _is_d6(o) and (o.held_by_color == nil or o.held_by_color == "") then
+    for _, o in ipairs(_all_objects()) do
+        if o ~= self and _is_d6(o) and (o.held_by_color == nil or o.held_by_color == "")
+            and not spawning[o.getGUID()] then
             local vx, vz, h = _design(o.getPosition())
             if math.abs(vx) <= DESIGN_W / 2 and math.abs(vz) <= DESIGN_D / 2 and h > -0.5 and h < 8 then
                 out[#out + 1] = { obj = o, vx = vx, vz = vz }
@@ -433,6 +464,12 @@ local function _dice_on_mat()
         end
     end
     return out
+end
+
+local function _guid_set(found)
+    local set = {}
+    for _, d in ipairs(found) do set[d.obj.getGUID()] = true end
+    return set
 end
 
 local function _face_rotation(die, value)
@@ -453,41 +490,38 @@ local function _die_value(die)
     return 1
 end
 
--- Put a die at design (vx, vz) showing `value`, square to the mat.
-local function _place(die, vx, vz, value)
-    local half = DIE_SIZE * M.k / 2
+-- Resize a die so its largest edge is `target` world units.
+local function _size_die(die, target)
     local ok, b = pcall(function() return die.getBoundsNormalized() end)
-    if ok and b and b.size and b.size.y > 0 then half = b.size.y / 2 end
-    die.setPosition(_world(vx, vz, half + 0.02))
+    if not ok or not b or not b.size then return end
+    local size = math.max(b.size.x, b.size.y, b.size.z)
+    if size <= 0 or math.abs(size - target) < target * 0.02 then return end
+    local f = die.getScale().x * target / size
+    die.setScale({ f, f, f })
+end
+
+-- Put a die at design (vx, vz), `size` world units big, showing `value`, square to the mat.
+local function _place(die, vx, vz, size, value)
+    _size_die(die, size)
+    die.setPosition(_world(vx, vz, size / 2 + 0.02))
     local rot = _face_rotation(die, value)
     if rot then die.setRotation(rot) end
     if die.setVelocity then die.setVelocity({ 0, 0, 0 }) end
     if die.setAngularVelocity then die.setAngularVelocity({ 0, 0, 0 }) end
 end
 
-local function _normalize_die_size(die)
-    local ok, b = pcall(function() return die.getBoundsNormalized() end)
-    if not ok or not b or not b.size then return end
-    local size = math.max(b.size.x, b.size.y, b.size.z)
-    if size <= 0 then return end
-    local f = die.getScale().x * (DIE_SIZE * M.k) / size
-    die.setScale({ f, f, f })
-end
-
 --------------------------------------------------------------------------------
 -- Layout + labels
 --------------------------------------------------------------------------------
-local function _hide_results()
-    for r = 1, MAX_ROWS do _edit("row_" .. r, { label = "", width = 0, height = 0 }) end
-    for g = 1, MAX_GROUP_LABELS do _edit("group_" .. g, { label = "", width = 0, height = 0 }) end
-end
+local function _row_z(r, f) return AREA_TOP - DIE_SIZE * f / 2 - (r - 1) * ROW_H * f end
 
+-- Live values of a group's dice (nil if a die is gone).
 local function _group_values(g)
     local vals = {}
     for _, guid in ipairs(g.guids) do
         local die = getObjectFromGUID(guid)
         if die == nil then return nil end
-        vals[#vals + 1] = g.values and g.values[guid] or _die_value(die)
+        vals[#vals + 1] = _die_value(die)
     end
     return vals
 end
@@ -499,27 +533,37 @@ local function _group_is_unrolled(g)
     return false
 end
 
--- Update the label under one pair from its dice.
-local function _refresh_group_label(g)
-    if not g.label_slot then return nil end
-    local key = "group_" .. g.label_slot
+-- Label/colour/tooltip for the box under a pair, from the dice as they lie.
+local function _label_params(g)
     local vals = _group_values(g)
     if vals == nil then
-        _edit(key, { label = "gone", color = TONE_COLORS.none, tooltip = "A die of this pair is missing" })
-        return nil
+        return { label = "gone", color = TONE_COLORS.none, tooltip = "A die of this pair is missing" }
     end
     if _group_is_unrolled(g) then
-        _edit(key, { label = "?", color = TONE_COLORS.none, tooltip = "Not rolled yet" })
-        return nil
+        return { label = "?", color = TONE_COLORS.none, tooltip = "Not rolled yet" }
     end
     local label, chat, tone = read_group(vals, state.mode, state.tn, state.size)
-    _edit(key, { label = label, color = TONE_COLORS[tone] or TONE_COLORS.none,
-        tooltip = g.name .. " pair: " .. chat .. "\nClick to re-roll this pair" })
+    return { label = label, color = TONE_COLORS[tone] or TONE_COLORS.none,
+        tooltip = g.name .. " pair: " .. chat .. "\nClick to re-roll this pair" }, chat, tone
+end
+
+local function _refresh_group_label(g, extra)
+    if not g.label_slot then return nil end
+    local params, chat, tone = _label_params(g)
+    if extra then for k, v in pairs(extra) do params[k] = v end end
+    g.shown = params.label
+    _edit("group_" .. g.label_slot, params)
     return chat, tone
 end
 
 local function _refresh_labels()
     for _, g in ipairs(groups) do _refresh_group_label(g) end
+end
+
+-- Snap a design z to the row index of the current layout (strict sort key).
+local function _row_index(vz)
+    local f = M.f or 1
+    return math.floor((_row_z(1, f) - vz) / (ROW_H * f) + 0.5)
 end
 
 -- Group dice into rows. layout = "pairs" (by color, in 2s) or "sorted" (by value).
@@ -537,7 +581,8 @@ local function _build_rows(dice, layout)
             if list then
                 table.sort(list, function(a, b)
                     if a.group.order ~= b.group.order then return a.group.order < b.group.order end
-                    return a.group.key < b.group.key
+                    if a.group.key ~= b.group.key then return a.group.key < b.group.key end
+                    return a.obj.getGUID() < b.obj.getGUID()
                 end)
                 local row = { label = v .. "s: " .. #list, color = PANEL_COLOR, text = MAT_TEXT, groups = {} }
                 for _, d in ipairs(list) do
@@ -557,6 +602,7 @@ local function _build_rows(dice, layout)
             by_color[key] = { group = d.group, dice = {} }
             order[#order + 1] = key
         end
+        d.row = _row_index(d.vz)
         table.insert(by_color[key].dice, d)
     end
     table.sort(order, function(a, b)
@@ -567,8 +613,8 @@ local function _build_rows(dice, layout)
     for _, key in ipairs(order) do
         local entry = by_color[key]
         table.sort(entry.dice, function(a, b)
-            if math.abs(a.vz - b.vz) > 0.6 then return a.vz > b.vz end
-            if math.abs(a.vx - b.vx) > 1e-6 then return a.vx < b.vx end
+            if a.row ~= b.row then return a.row < b.row end
+            if a.vx ~= b.vx then return a.vx < b.vx end
             return a.obj.getGUID() < b.obj.getGUID()
         end)
         local row = { label = string.upper(entry.group.name), color = entry.group.rgb,
@@ -583,81 +629,123 @@ local function _build_rows(dice, layout)
     return rows
 end
 
--- Place every die of `rows` on the mat and set up the labels.
-local function _apply_rows(rows, layout)
-    _hide_results()
-    groups = {}
-    local r, slot, overflow = 0, 0, false
+-- Work out where every group goes at size factor f (1 = full size).
+local function _plan(rows, layout, f)
+    local die, gap = DIE_SIZE * f, ((layout == "sorted") and SINGLE_GAP or GROUP_GAP) * f
+    local plan = { f = f, rows = {}, groups = {} }
+    local r = 0
     for _, row in ipairs(rows) do
         r = r + 1
+        plan.rows[#plan.rows + 1] = { r = r, label = row.label, color = row.color, text = row.text }
         local x = AREA_LEFT
-        local first = true
         for _, g in ipairs(row.groups) do
             local n = #g.dice
-            local width = n * DIE_SIZE + (n - 1) * DIE_GAP
-            if x + width > AREA_RIGHT + 1e-6 then          -- wrap onto a new row
+            local width = n * die + (n - 1) * DIE_GAP * f
+            if x > AREA_LEFT and x + width > AREA_RIGHT + 1e-6 then   -- wrap onto a new row
                 r = r + 1
                 x = AREA_LEFT
+                plan.rows[#plan.rows + 1] = { r = r, label = "", color = row.color, text = row.text }
             end
-            if first or x == AREA_LEFT then
-                if r <= MAX_ROWS then
-                    _edit("row_" .. r, {
-                        label = first and row.label or "",
-                        width = 2.1 * BUTTON_UNITS, height = 1.0 * BUTTON_UNITS,
-                        color = row.color, font_color = row.text,
-                        position = _local(ROW_LABEL_X, _row_z(r), 0.02),
-                    })
-                end
-                first = false
-            end
-            if r > MAX_ROWS then overflow = true end
-            local vz = _row_z(r)
-            local guids, values = {}, {}
-            for j, d in ipairs(g.dice) do
-                local vx = x + (j - 1) * (DIE_SIZE + DIE_GAP) + DIE_SIZE / 2
-                local value = d.value or _die_value(d.obj)
-                _place(d.obj, vx, vz, value)
-                guids[#guids + 1] = d.obj.getGUID()
-                values[d.obj.getGUID()] = value
-            end
-            local entry = { guids = guids, values = values, name = g.name, rgb = g.rgb }
-            if layout == "pairs" and r <= MAX_ROWS and slot < MAX_GROUP_LABELS then
-                slot = slot + 1
-                entry.label_slot = slot
-                _edit("group_" .. slot, {
-                    position = _local(x + width / 2, vz + GROUP_LABEL_DZ, 0.02),
-                    width = math.max(width, 2.1) * BUTTON_UNITS, height = 0.55 * BUTTON_UNITS,
-                })
-            end
-            groups[#groups + 1] = entry
-            x = x + width + ((layout == "sorted") and SINGLE_GAP or GROUP_GAP)
+            plan.groups[#plan.groups + 1] = { g = g, r = r, x = x, width = width }
+            x = x + width + gap
         end
     end
-    last_layout = layout
-    return overflow
+    local bottom = _row_z(r, f) - die / 2
+    if layout == "pairs" then bottom = _row_z(r, f) + GROUP_LABEL_DZ * f - GROUP_LABEL_H * f / 2 end
+    plan.fits = r <= MAX_ROW_LABELS and bottom >= AREA_BOTTOM - 1e-6
+    return plan
 end
 
-local function _update_count()
-    local n = #_dice_on_mat()
+-- Place every die of `rows` on the mat (shrinking dice if needed) and set up the labels.
+local function _apply_rows(rows, layout)
+    local plan
+    for _, f in ipairs(FIT_STEPS) do
+        plan = _plan(rows, layout, f)
+        if plan.fits then break end
+    end
+    local f = plan.f
+    M.f = f
+
+    for i, pr in ipairs(plan.rows) do
+        if i <= MAX_ROW_LABELS then
+            _edit("row_" .. i, {
+                label = pr.label, color = pr.color, font_color = pr.text,
+                width = 2.1 * f * BUTTON_UNITS, height = 1.0 * f * BUTTON_UNITS,
+                font_size = math.max(0.36 * f, 0.24) * BUTTON_UNITS,
+                position = _local(ROW_LABEL_X, _row_z(pr.r, f), 0.02),
+            })
+        end
+    end
+    for i = #plan.rows + 1, visible_rows do _edit("row_" .. i, { label = "", width = 0, height = 0 }) end
+    visible_rows = math.min(#plan.rows, MAX_ROW_LABELS)
+
+    groups = {}
+    local slot = 0
+    for _, pg in ipairs(plan.groups) do
+        local vz = _row_z(pg.r, f)
+        local guids = {}
+        for j, d in ipairs(pg.g.dice) do
+            local vx = pg.x + (j - 1) * (DIE_SIZE + DIE_GAP) * f + DIE_SIZE * f / 2
+            _place(d.obj, vx, vz, DIE_SIZE * M.k * f, d.value or _die_value(d.obj))
+            guids[#guids + 1] = d.obj.getGUID()
+        end
+        local entry = { guids = guids, name = pg.g.name, rgb = pg.g.rgb }
+        if layout == "pairs" and slot < MAX_GROUP_LABELS then
+            slot = slot + 1
+            entry.label_slot = slot
+            _refresh_group_label(entry, {
+                position = _local(pg.x + pg.width / 2, vz + GROUP_LABEL_DZ * f, 0.02),
+                width = math.max(pg.width, 2.1 * f) * BUTTON_UNITS,
+                height = GROUP_LABEL_H * f * BUTTON_UNITS,
+                font_size = math.max(0.34 * f, 0.22) * BUTTON_UNITS,
+            })
+        end
+        groups[#groups + 1] = entry
+    end
+    for i = slot + 1, visible_groups do _edit("group_" .. i, { label = "", width = 0, height = 0 }) end
+    visible_groups = slot
+    state.layout = layout
+    return not plan.fits
+end
+
+local function _set_count(n)
     _edit("count", { label = n .. " di" .. ((n == 1) and "e" or "ce") })
-    return n
+end
+
+-- Map every die's tint to a color group. Tints outside the palette are
+-- clustered by distance, so float noise never splits one color in two.
+local function _assign_groups(found)
+    local foreign = {}
+    for _, d in ipairs(found) do
+        local rgb = _rgb_of(d.obj.getColorTint())
+        local g = _palette_group(rgb)
+        if not g then
+            for _, fg in ipairs(foreign) do
+                if _dist2(rgb, fg.rgb) < FOREIGN_MERGE_D2 then g = fg break end
+            end
+        end
+        if not g then
+            local hex = _hex(rgb)
+            g = { key = "x" .. hex, order = 100, name = "#" .. string.upper(hex), rgb = rgb }
+            foreign[#foreign + 1] = g
+        end
+        d.group = g
+    end
 end
 
 -- Collect, (optionally) roll, and lay out every die on the mat.
 local function _arrange(layout, roll)
     local found = _dice_on_mat()
+    _assign_groups(found)
     local function roll_die(d)
         d.value = math.random(6)
         unrolled[d.obj.getGUID()] = nil
     end
-    for _, d in ipairs(found) do
-        d.group = _color_group(_rgb_of(d.obj.getColorTint()))
-        -- SORTED needs the values before it can build its rows
-        if roll and layout == "sorted" then roll_die(d) end
+    if roll and layout == "sorted" then           -- SORTED needs values to build rows
+        for _, d in ipairs(found) do roll_die(d) end
     end
     local rows = _build_rows(found, layout)
-    if roll and layout == "pairs" then
-        -- roll in reading order: color by color, pair by pair
+    if roll and layout == "pairs" then            -- roll in reading order
         for _, row in ipairs(rows) do
             for _, g in ipairs(row.groups) do
                 for _, d in ipairs(g.dice) do roll_die(d) end
@@ -665,8 +753,7 @@ local function _arrange(layout, roll)
         end
     end
     local overflow = _apply_rows(rows, layout)
-    _refresh_labels()
-    _update_count()
+    _set_count(#found)
     return found, rows, overflow
 end
 
@@ -674,8 +761,7 @@ local function _chat_summary(rows, player_color, layout)
     local mode = _mode()
     local header = "== " .. _player_name(player_color) .. ": "
     if layout == "sorted" then
-        header = header .. "ROLL SORTED =="
-        printToAll(header, { 1, 1, 1 })
+        printToAll(header .. "ROLL SORTED ==", { 1, 1, 1 })
         local parts = {}
         for _, row in ipairs(rows) do parts[#parts + 1] = row.label end
         printToAll(table.concat(parts, "  |  "), { 0.9, 0.9, 0.9 })
@@ -709,63 +795,93 @@ local function _chat_summary(rows, player_color, layout)
     end
 end
 
+-- Re-label pairs whose dice were changed by hand (number key, knocked over...).
+local function _watch()
+    for _, g in ipairs(groups) do
+        if g.label_slot and not _group_is_unrolled(g) then
+            local settled = true
+            for _, guid in ipairs(g.guids) do
+                local die = getObjectFromGUID(guid)
+                if die and (not die.resting or (die.held_by_color ~= nil and die.held_by_color ~= "")) then
+                    settled = false
+                end
+            end
+            if settled then
+                local params = _label_params(g)
+                if params.label ~= g.shown then _refresh_group_label(g) end
+            end
+        end
+    end
+end
+
 --------------------------------------------------------------------------------
 -- Actions
 --------------------------------------------------------------------------------
 local function _roll(layout, player_color)
     local found, rows, overflow = _arrange(layout, true)
     if #found == 0 then
-        printToColor("BattleTech Dice: no dice on the mat. Pick a color and click +2D6 first.", player_color, { 1, 0.6, 0.2 })
+        _warn(player_color, "no dice on the mat. Pick a color and click +2D6 first.")
         return
     end
     _chat_summary(rows, player_color, layout)
-    if overflow then
-        printToColor("BattleTech Dice: too many dice for the mat - some rows run past the edge.", player_color, { 1, 0.6, 0.2 })
-    end
+    if overflow then _warn(player_color, "too many rows for the mat - some dice run past the edge.") end
 end
 
 local function _spawn(amount, player_color)
-    local current = #_dice_on_mat()
+    local pending_now = 0
+    for _ in pairs(spawning) do pending_now = pending_now + 1 end
+    local current = #_dice_on_mat() + pending_now
     if current + amount > MAX_DICE then
-        printToColor("BattleTech Dice: dice limit (" .. MAX_DICE .. ") reached.", player_color, { 1, 0.6, 0.2 })
+        _warn(player_color, "dice limit (" .. MAX_DICE .. ") reached.")
         amount = MAX_DICE - current
     end
     if amount <= 0 then return end
     local c = PALETTE[state.color]
-    local pending = amount
+    local left = amount
     for i = 1, amount do
-        spawnObject({
+        -- every die in flight gets its own spot above the bottom of the mat
+        local n = pending_now + i - 1
+        local die = spawnObject({
             type = "Die_6",
-            position = _world(AREA_RIGHT - 1 - (i - 1) * 1.2, _row_z(MAX_ROWS), 2),
+            position = _world(AREA_RIGHT - 0.6 - (n % 10) * 1.3, AREA_BOTTOM + 1.2 + math.floor(n / 10) % 3 * 1.3,
+                3 + math.floor(n / 30) * 1.5),
             rotation = { 0, self.getRotation().y, 0 },
             scale = { 1, 1, 1 },
             sound = false,
-            callback_function = function(die)
-                die.setColorTint(c.rgb)
-                die.setName("BT " .. c.name .. " die")
-                if die.addTag then die.addTag(DICE_TAG) end
-                _normalize_die_size(die)
-                unrolled[die.getGUID()] = true
-                pending = pending - 1
-                if pending == 0 then _arrange("pairs", false) end
+            callback_function = function(obj)
+                obj.setColorTint(c.rgb)
+                obj.setName("BT " .. c.name .. " die")
+                if obj.addTag then obj.addTag(DICE_TAG) end
+                unrolled[obj.getGUID()] = true
+                spawning[obj.getGUID()] = nil
+                left = left - 1
+                if left == 0 then _arrange("pairs", false) end
             end,
         })
+        if die then
+            spawning[die.getGUID()] = true
+            die.setColorTint(c.rgb)
+        end
     end
 end
 
 local function _reroll_group(slot, player_color)
     for _, g in ipairs(groups) do
         if g.label_slot == slot then
-            local vals = {}
+            local on_mat = _guid_set(_dice_on_mat())
+            local dice = {}
             for _, guid in ipairs(g.guids) do
                 local die = getObjectFromGUID(guid)
-                if die == nil then
-                    printToColor("BattleTech Dice: that pair is missing a die - roll again.", player_color, { 1, 0.6, 0.2 })
+                if die == nil or not on_mat[guid] then
+                    _warn(player_color, "that pair is no longer on the mat - roll again.")
                     return
                 end
+                dice[#dice + 1] = die
+            end
+            local vals = {}
+            for i, die in ipairs(dice) do
                 local v = math.random(6)
-                unrolled[guid] = nil
-                g.values[guid] = v
+                unrolled[g.guids[i]] = nil
                 vals[#vals + 1] = v
                 -- keep the die exactly where it is, just show the new face
                 local rot = _face_rotation(die, v)
@@ -782,17 +898,23 @@ end
 local function _delete_misses(player_color)
     local tn = tonumber(state.tn)
     if _mode().key ~= "tohit" or not tn then
-        printToColor("BattleTech Dice: set READ AS to TO-HIT and enter a TN first.", player_color, { 1, 0.6, 0.2 })
+        _warn(player_color, "set READ AS to TO-HIT and enter a TN first.")
         return
     end
+    if state.layout ~= "pairs" then
+        _warn(player_color, "DELETE MISSES works on pairs - use ROLL IN 2s BY COLOR first.")
+        return
+    end
+    local on_mat = _guid_set(_dice_on_mat())
     local removed = 0
     for _, g in ipairs(groups) do
         local vals = _group_values(g)
-        if vals and #vals == 2 and not _group_is_unrolled(g) and (vals[1] + vals[2] < tn or tn >= 13) then
-            for _, guid in ipairs(g.guids) do
-                local die = getObjectFromGUID(guid)
-                if die then die.destruct() end
-            end
+        local all_here = true
+        for _, guid in ipairs(g.guids) do
+            if not on_mat[guid] then all_here = false end
+        end
+        if all_here and vals and #vals == 2 and not _group_is_unrolled(g) and (vals[1] + vals[2] < tn or tn >= 13) then
+            for _, guid in ipairs(g.guids) do getObjectFromGUID(guid).destruct() end
             removed = removed + 1
         end
     end
@@ -808,8 +930,10 @@ local function _clear(player_color)
         n = n + 1
     end
     groups, unrolled = {}, {}
-    _hide_results()
-    _edit("count", { label = "0 dice" })
+    for i = 1, visible_rows do _edit("row_" .. i, { label = "", width = 0, height = 0 }) end
+    for i = 1, visible_groups do _edit("group_" .. i, { label = "", width = 0, height = 0 }) end
+    visible_rows, visible_groups = 0, 0
+    _set_count(0)
     if n > 0 then printToAll(_player_name(player_color) .. " cleared the dice mat (" .. n .. " dice).", { 1, 0.85, 0.3 }) end
 end
 
@@ -825,7 +949,9 @@ local function _load_state(saved_data)
     if tonumber(data.mode) then state.mode = _clamp(math.floor(tonumber(data.mode)), 1, #MODES) end
     if data.tn ~= nil then state.tn = _trim(data.tn) end
     if data.size ~= nil then state.size = _trim(data.size) end
-    if type(data.mirror) == "boolean" then state.mirror = data.mirror end
+    state.mirror = (data.mirror == true or data.mirror == "true")
+    state.placed = (data.placed == true or data.placed == "true")
+    if data.layout == "sorted" then state.layout = "sorted" end
 end
 
 function onLoad(saved_data)
@@ -834,7 +960,20 @@ function onLoad(saved_data)
     _load_state(saved_data)
     _build_ui()
     -- Dice from a saved game: re-attach the labels once everything is loaded.
-    Wait.time(function() _arrange(last_layout, false) end, 1)
+    Wait.time(function() _arrange(state.layout, false) end, 1)
+    if not watching then
+        watching = true
+        Wait.time(_watch, 1, -1)
+    end
+    -- First spawn from Saved Objects: let the mat settle on the table, then lock it.
+    if not state.placed then
+        Wait.condition(function()
+            self.setLock(true)
+            state.placed = true
+        end, function()
+            return self.resting and (self.held_by_color == nil or self.held_by_color == "")
+        end, 60)
+    end
 end
 
 function onSave()
@@ -852,7 +991,7 @@ function btn_del_misses(_, color) _delete_misses(color) end
 
 function btn_clear(_, color, alt)
     if not alt then
-        printToColor("BattleTech Dice: use RIGHT-click to clear the mat.", color, { 1, 0.6, 0.2 })
+        _warn(color, "use RIGHT-click to clear the mat.")
         return
     end
     _clear(color)
@@ -865,17 +1004,17 @@ function btn_read_as(_, color, alt)
     _refresh_labels()
 end
 
-function input_number(_, color, value)
+function input_number(_, color, value, selected)
     local mode = _mode()
     if mode.input == "tn" then state.tn = _trim(value) end
     if mode.input == "size" then state.size = _trim(value) end
-    _refresh_labels()
+    if not selected then _refresh_labels() end   -- relabel once editing is done
 end
 
 function btn_mirror()
     state.mirror = not state.mirror
     _build_ui()
-    _arrange(last_layout, false)
+    _arrange(state.layout, false)
 end
 
 local HELP_TEXT = table.concat({
