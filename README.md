@@ -15,19 +15,30 @@ TTS API.*
 ## Install (Saved Object)
 
 1. Download [`dist/BattleTech Dice Mat.json`](dist/BattleTech%20Dice%20Mat.json)
-   (and the optional `.png` thumbnail next to it).
-2. Copy both files into
-   `Documents/My Games/Tabletop Simulator/Saves/Saved Objects/`.
-3. In TTS: **Objects → Saved Objects → BattleTech Dice Mat**. It drops into any
-   table, including the BattleTech mods with all the maps.
+   and the `.png` thumbnail next to it.
+2. Copy both into the `Saves/Saved Objects` folder of your TTS data folder:
 
-The mat is a locked, scaled block with everything drawn by its script, so it
-doesn't need any external images. To move it, unlock it first (right-click →
-Toggle Lock).
+   | OS | Folder |
+   |---|---|
+   | Windows | `%USERPROFILE%\Documents\My Games\Tabletop Simulator\Saves\Saved Objects` |
+   | macOS | `~/Library/Tabletop Simulator/Saves/Saved Objects` |
+   | Linux | `~/.local/share/Tabletop Simulator/Saves/Saved Objects` |
 
-**Without the saved object:** paste [`src/battletech_dice_mat.lua`](src/battletech_dice_mat.lua)
-into the script of any flat object (right-click → Scripting → Lua Editor) and
-click *Save & Play*.
+   (If you moved your TTS data folder in the game's settings, use that location instead.)
+3. In TTS: **Objects → Saved Objects → BattleTech Dice Mat**. Drag it to a free
+   spot beside the map. It drops onto whatever table or map is there. Then lock it in
+   place with **L** (or right-click → Toggles → Lock) so dice can't push it around.
+
+The mat is a scaled block, and its script draws everything on it, so it
+doesn't need any external images. It works in any table, including the BattleTech
+mods with all the maps.
+
+**Without the saved object:** scale any flat object (a block works) to roughly
+25 × 0.25 × 16 first. The layout sizes itself to the object, so an unscaled
+object gives tiny buttons. Then paste [`src/battletech_dice_mat.lua`](src/battletech_dice_mat.lua)
+into its script (right-click → Scripting → Scripting Editor, called "Lua Editor"
+in older builds) and click *Save & Play*. Save & Play reloads the table, so save
+the game first.
 
 ## How to use it
 
