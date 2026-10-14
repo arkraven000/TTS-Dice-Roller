@@ -1,0 +1,8 @@
+== Tester-Red: TO-HIT - 6 pairs ==
+[e62929]#1 RED[-] Medium Laser: 4 + 5 = 9 vs TN 7 -> HIT
+[4080ff]#2 BLUE[-] LRM 15: 6 + 4 = 10 vs TN 9 -> HIT
+[26b847]#3 GREEN[-] SRM 6: 2 + 3 = 5 vs TN 8 -> MISS
+[ffe01a]#4 YELLOW[-] PPC: 6 + 6 = 12 vs TN 10 -> HIT
+[ff850d]#5 ORANGE[-] Large Laser: 1 + 3 = 4 vs TN 9 -> MISS
+[a866f2]#6 PURPLE[-] Medium Pulse: 5 + 2 = 7 vs TN 6 -> HIT
+Hits: 4 / 6 (Red, Blue, Yellow, Purple)
