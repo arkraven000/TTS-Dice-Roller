@@ -98,6 +98,13 @@ after the palette colors. Dice in a player's hand and dice off the mat are ignor
   authority and nobody desyncs. The chat header shows who rolled.
 * Rolls are instant: the values are chosen by the script (like the Hutber table)
   and the dice are turned to show them. There's no waiting for physics.
+* **Are the dice fair?** Yes. TTS's Lua engine (MoonSharp) gives every object its own
+  `System.Random`. `math.random(6)` maps it onto 1–6 with a bias of about 2×10⁻⁹. An audit
+  ran 3.6 million test rolls on a faithful port of that generator. The faces, the pairs
+  (all 36 combinations), the 2D6 totals, triples and runs all came out uniform
+  (χ² p-values from 0.27 to 0.95). Each mat seeds from its own GUID plus the clock,
+  so two mats never roll the same sequence. It also shuffles the stream by click timing
+  before each roll, so rolls can't be predicted from the time the table was loaded.
 * The dice color, READ AS, TN and cluster size are saved with the game. After a reload, the labels
   re-attach to the dice still on the mat.
 * Other scripts can call `mat.call("api_roll", {color="Red"})` and

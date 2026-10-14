@@ -657,3 +657,30 @@ TESTS.live_dice_sit_directly_above_their_result_labels = function()
         ok(row[1]._pos.x > row_tag.x, "dice to the right of their color tag")
     end
 end
+
+--------------------------------------------------------------------------------
+-- Random numbers (from the RNG audit)
+--------------------------------------------------------------------------------
+TESTS.rng_seed_differs_per_mat_loaded_in_same_second = function()
+    local t, c = 1791985639, 12.345678
+    local a = rng_seed("b7d401", t, c)
+    local b = rng_seed("4e0e0b", t, c)
+    ok(a ~= b, "two mats loaded in the same second get different seeds")
+    ok(rng_seed("b7d401", t, c + 0.001) ~= a, "clock time changes the seed")
+    ok(rng_seed("b7d401", t + 1, c) ~= a, "wall time changes the seed")
+    for _, g in ipairs({ "b7d401", "ffffff", "zzzzzzzz" }) do
+        local s = rng_seed(g, 4102444800, 999.999999)   -- year 2100: no int overflow
+        ok(s >= 0 and s < 2147483647 and s == math.floor(s), "seed is a valid 31-bit int: " .. s)
+    end
+end
+
+TESTS.rng_onload_seeds_from_guid_and_clock = function()
+    local seen = {}
+    local real = math.randomseed
+    math.randomseed = function(x) seen[#seen + 1] = x; return real(x) end
+    self._guid = "aaaaaa"; onLoad("")
+    self._guid = "bbbbbb"; onLoad("")
+    math.randomseed = real
+    eq(#seen, 2)
+    ok(seen[1] ~= seen[2], "different mats -> different seeds even at the same os.time()")
+end

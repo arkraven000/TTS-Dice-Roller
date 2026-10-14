@@ -28,7 +28,7 @@
 --------------------------------------------------------------------------------
 -- Constants
 --------------------------------------------------------------------------------
-local VERSION = "2.1.1"
+local VERSION = "2.1.2"
 
 -- Layout is designed on a DESIGN_W x DESIGN_D grid, scaled to the mat's size.
 local DESIGN_W, DESIGN_D = 30, 19
@@ -820,9 +820,34 @@ local function _watch()
 end
 
 --------------------------------------------------------------------------------
+-- Random numbers
+--------------------------------------------------------------------------------
+-- MoonSharp gives every object script its own System.Random. Its quality is
+-- fine for d6 (uniform to ~1e-9), but a seed of os.time() alone is shared by
+-- every mat loaded in the same second (identical rolls on a save load) and is
+-- easy to guess. Mix in the mat's GUID and sub-millisecond clock time.
+function rng_seed(guid, time_s, clock_s)
+    local h = 0
+    for i = 1, #guid do h = (h * 31 + guid:byte(i)) % 2147483647 end
+    local c = math.floor((clock_s % 1000) * 1e6)
+    return (math.floor(time_s) + c + h * 7919) % 2147483647
+end
+
+local function _seed_rng()
+    math.randomseed(rng_seed(self.getGUID(), os.time(), os.clock()))
+end
+
+-- Burn a click-timing-dependent number of values before a roll, so the
+-- sequence can't be predicted from the load time alone.
+local function _stir_rng()
+    for _ = 1, math.floor(os.clock() * 1000) % 16 do math.random() end
+end
+
+--------------------------------------------------------------------------------
 -- Actions
 --------------------------------------------------------------------------------
 local function _roll(layout, player_color)
+    _stir_rng()
     local found, rows, overflow = _arrange(layout, true)
     if #found == 0 then
         _warn(player_color, "no dice on the mat. Pick a color and click +2D6 first.")
@@ -871,6 +896,7 @@ local function _spawn(amount, player_color)
 end
 
 local function _reroll_group(slot, player_color)
+    _stir_rng()
     for _, g in ipairs(groups) do
         if g.label_slot == slot then
             local on_mat = _guid_set(_dice_on_mat())
@@ -960,8 +986,7 @@ local function _load_state(saved_data)
 end
 
 function onLoad(saved_data)
-    math.randomseed(os.time())
-    for _ = 1, 5 do math.random() end
+    _seed_rng()
     _load_state(saved_data)
     _build_ui()
     -- Dice from a saved game: re-attach the labels once everything is loaded.
