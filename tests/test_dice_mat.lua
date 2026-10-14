@@ -160,7 +160,7 @@ local function rects()
     local s = self.getScale()
     local out = {}
     local function add(p, w, h)
-        local c = self.positionToWorld(p.position)
+        local c = MOCK.button_world(p.position)
         out[#out + 1] = { label = p.label or p.tooltip or "", x = c.x, z = c.z,
             hw = w * p.scale[1] * s.x / 2, hh = h * p.scale[3] * s.z / 2 }
     end
@@ -456,10 +456,10 @@ TESTS.mirror_flips_layout_and_dice = function()
     spawn("Red")
     MOCK.click("btn_roll_pairs"); MOCK.run()
     local before = rows_of_dice()[1][1]._pos.x
-    local bx = self.positionToWorld(MOCK.button("ROLL IN 2s BY COLOR").position).x
+    local bx = MOCK.button_world(MOCK.button("ROLL IN 2s BY COLOR").position).x
     MOCK.click("btn_mirror")
     ok(state().mirror)
-    near(self.positionToWorld(MOCK.button("ROLL IN 2s BY COLOR").position).x, -bx, 1e-6, "controls mirrored")
+    near(MOCK.button_world(MOCK.button("ROLL IN 2s BY COLOR").position).x, -bx, 1e-6, "controls mirrored")
     ok(before < 0 and rows_of_dice()[1][2]._pos.x > 0, "dice moved with the layout")
     check_layout()
 end
@@ -638,4 +638,22 @@ TESTS.review_warnings_reach_empty_seats = function()
     local n0 = #MOCK.chat
     api_roll({})
     eq(MOCK.chat[n0 + 1].to, "all", "API warning goes to everyone when White is empty")
+end
+
+TESTS.live_dice_sit_directly_above_their_result_labels = function()
+    -- Regression for the first live TTS test: labels were on the left, dice on the right.
+    fresh()
+    spawn("Yellow"); spawn("Orange"); spawn("Cyan"); spawn("Pink")
+    MOCK.click("btn_roll_pairs"); MOCK.run()
+    local rows = rows_of_dice()
+    eq(#rows, 4)
+    for r, row in ipairs(rows) do
+        local label = MOCK.button_world(group_label(r).position)
+        local mid = { x = (row[1]._pos.x + row[2]._pos.x) / 2, z = (row[1]._pos.z + row[2]._pos.z) / 2 }
+        near(mid.x, label.x, 1e-6, "pair " .. r .. " centred over its result box (x)")
+        ok(mid.z > label.z and mid.z - label.z < 1.0, "pair " .. r .. " just above its result box")
+        local row_tag = MOCK.button_world(row_label(r).position)
+        near(row[1]._pos.z, row_tag.z, 1e-6, "dice level with their color tag")
+        ok(row[1]._pos.x > row_tag.x, "dice to the right of their color tag")
+    end
 end
